@@ -4,7 +4,7 @@
   "private": true,
   "scripts": {
     "start": "astro dev",
-    "build": "astro build",
+    "build": "echo \"docs build\"",
     "lint": "run-p --aggregate-output lint:linkcheck",
     "lint:linkcheck": "start-test 'yarn start --silent' 3000  'yarn lint:linkcheck:local'",
     "lint:linkcheck:local": "blc -ro --user-agent 'broken-link-checker/0.7.8' 'http://localhost:3000'",

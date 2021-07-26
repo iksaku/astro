@@ -1,21 +1,30 @@
 import type { ViteDevServer } from 'vite';
 import type { LogOptions } from '../logger';
 
+import path from 'path';
 import { fileURLToPath } from 'url';
 import loadCollection from './collections.js';
 import { canonicalURL, URLMap } from './util.js';
 
 interface SSROptions {
+  isDev?: boolean;
   logging: LogOptions;
   origin: string;
+  projectRoot: URL;
   reqURL: string;
   urlMap: URLMap;
   viteServer: ViteDevServer;
 }
 
+/** Transform code for Vite */
+function resolveIDs(code: string): string {
+  return code.replace(/\/?astro_core:([^\/]+)/g, '/@id/astro_core:$1');
+}
+
 /** Use Vite to SSR URL */
-export default async function ssr({ logging, reqURL, urlMap, origin, viteServer }: SSROptions): Promise<string> {
+export default async function ssr({ isDev = true, logging, reqURL, urlMap, origin, projectRoot, viteServer }: SSROptions): Promise<{ html: string; css?: string }> {
   // locate file on disk
+  const tmpDir = new URL('./.astro-ssr/', projectRoot);
   const fullURL = new URL(reqURL, origin);
   const modURL = urlMap.staticPages.get(reqURL) as URL;
   const mod = await viteServer.ssrLoadModule(fileURLToPath(modURL));
@@ -42,7 +51,7 @@ export default async function ssr({ logging, reqURL, urlMap, origin, viteServer 
   const deepCssImports = [...deepImports].filter((d) => d.endsWith('.css'));
 
   // SSR HTML
-  let html = await mod.__renderPage({
+  let html: string = await mod.__renderPage({
     request: {
       // params should go here when implemented
       url: fullURL,
@@ -53,15 +62,27 @@ export default async function ssr({ logging, reqURL, urlMap, origin, viteServer 
     css: mod.css || [],
   });
 
-  // inject Vite client
-  // note: vite.transformIndexHtml(…) will strip hydration scripts
-  html = html.replace(/<head>/, `<head><script type="module" src="/@vite/client"></script>`);
+  // prepare template with Vite
+  html = await viteServer.transformIndexHtml(reqURL, html);
 
-  // inject deeply collected CSS
-  for (const deepCssImport of deepCssImports) {
-    html = html.replace(/<\/head>/, `<script type="module" src="${deepCssImport}"></script></head>`);
+  html = html.replace(
+    '</head>',
+    `  ${deepCssImports
+      .map((projectURL) => {
+        const filePath = new URL(`.${projectURL}`, projectRoot);
+        const reqLoc = new URL(`.${path.posix.dirname(reqURL).replace(/\/?$/, '/')}`, tmpDir);
+        let relPath = path.relative(fileURLToPath(reqLoc), fileURLToPath(filePath));
+        if (relPath[0] !== '.') relPath = `./${relPath}`; // Vite relies on module-style syntax
+        return `<link rel="stylesheet" type="text/css" href="${relPath}" />`;
+      })
+      .join('\n  ')}</head>`
+  );
+
+  // update URLs for production build
+  if (!isDev) {
+    html = html.replace(/\/@id\//g, '');
   }
 
   // finish
-  return html;
+  return { html, css: mod.css };
 }

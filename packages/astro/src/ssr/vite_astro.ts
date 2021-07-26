@@ -1,69 +1,29 @@
-import type { SourceDescription } from 'rollup';
 import type { Plugin } from 'vite';
 import type { CompileOptions } from '../@types/compiler';
 
 import fs from 'fs';
+import path from 'path';
 import slash from 'slash';
 import { fileURLToPath } from 'url';
 import { compileComponent } from '../compiler/index.js';
 
-const ASTRO_CSS = 'astro_internal:css';
-const ASTRO_RENDERERS = 'astro_internal:renderers'; // can be anything; just ensure no conflicts with other namespaces
-
-const cssCache = new Map<string, SourceDescription>();
+const ASTRO_RENDERERS = 'astro_core:renderers';
 
 /** Allow Vite to load .astro files */
 export default function astro(compileOptions: CompileOptions): Plugin {
-  // note: we can’t access the Vite instance because this plugin is required to create it!
-  let viteOptimizerMetaLoc = new URL('./node_modules/.vite/_metadata.json', compileOptions.astroConfig.projectRoot); // will be overwritten in configResolved()
+  const tmpDir = new URL('./.astro-ssr/', compileOptions.astroConfig.projectRoot);
+  const cssDir = new URL('./css/', tmpDir);
 
   return {
     name: '@astrojs/plugin-vite',
-    configResolved(resolvedConfig) {
-      if (resolvedConfig.cacheDir) {
-        viteOptimizerMetaLoc = new URL('./_metadata.json', `file://${slash(resolvedConfig.cacheDir)}/`); // update metadata loc
-      }
-    },
-    async transform(src, id) {
-      if (id.endsWith('.astro') || id.endsWith('.md')) {
-        const result = await compileComponent(src, {
-          compileOptions,
-          filename: id,
-          projectRoot: fileURLToPath(compileOptions.astroConfig.projectRoot),
-        });
-        let code = result.contents;
-        if (result.css) {
-          const cssID = slash(id).replace(compileOptions.astroConfig.projectRoot.pathname, '') + '.css';
-          code = `import '${ASTRO_CSS}/${cssID}';\n` + code;
-          cssCache.set(cssID, result.css);
-        }
-        return {
-          code,
-          map: undefined, // TODO: add sourcemap
-        };
-      }
-      if (id.endsWith('__astro_component.js')) {
-        const code = `import rendererInstances from '${ASTRO_RENDERERS}';
-        ${src}`;
-        return {
-          code,
-          map: undefined, // TODO
-        };
-      }
-    },
     resolveId(id) {
-      if (id === ASTRO_RENDERERS || id.startsWith(ASTRO_CSS)) return id;
+      if (id === ASTRO_RENDERERS) return id;
       return null;
     },
     async load(id) {
       if (id === ASTRO_RENDERERS) {
         let code: string[] = [];
         let renderers = compileOptions.astroConfig.renderers || [];
-        let browserHash = '';
-        if (fs.existsSync(viteOptimizerMetaLoc)) {
-          const viteOptimizerMeta = JSON.parse(await fs.promises.readFile(viteOptimizerMetaLoc, 'utf8'));
-          browserHash = `?v=${viteOptimizerMeta.browserHash}`;
-        }
 
         await Promise.all(
           renderers.map(async (name, n) => {
@@ -73,19 +33,49 @@ export default function astro(compileOptions: CompileOptions): Plugin {
         );
         code.push(`const renderers = [`);
         renderers.forEach((moduleName, n) => {
-          let viteName = moduleName.replace('@astrojs/', '@astrojs_') + '_client.js';
-          code.push(`  { source: '/node_modules/.vite/${viteName}${browserHash}', renderer: __renderer_${n}, polyfills: [], hydrationPolyfills: [] },`);
+          code.push(`  { source: '${moduleName}', renderer: __renderer_${n}, polyfills: [], hydrationPolyfills: [] },`);
         });
         code.push(`];`);
         code.push(`export default renderers;`);
         return code.join('\n') + '\n';
       }
-      if (id.startsWith(ASTRO_CSS)) {
-        const cssID = id.replace(`${ASTRO_CSS}/`, '');
-        const css = cssCache.get(cssID);
-        if (css) return css.code;
-      }
+
       return null;
+    },
+    async transform(src, id) {
+      if (id.endsWith('.astro') || id.endsWith('.md')) {
+        const result = await compileComponent(src, {
+          compileOptions,
+          filename: id,
+          projectRoot: fileURLToPath(compileOptions.astroConfig.projectRoot),
+        });
+        let code = result.contents;
+        if (result.css && result.css.code) {
+          const projectLoc = slash(id).replace(compileOptions.astroConfig.projectRoot.pathname, '');
+          const cssID = `${projectLoc}.css`;
+          const filePath = new URL(cssID, cssDir);
+          if (!fs.existsSync(new URL('./', filePath))) await fs.promises.mkdir(new URL('./', filePath), { recursive: true });
+          await fs.promises.writeFile(filePath, result.css.code);
+          if (result.css.map) await fs.promises.writeFile(fileURLToPath(filePath) + '.map', result.css.map.toString(), 'utf8');
+          code = `import '${path.relative(path.dirname(id), fileURLToPath(cssDir))}/${cssID}';\n` + code;
+        }
+        return {
+          code,
+          map: undefined, // TODO: add sourcemap
+        };
+      }
+      if (id.endsWith('__astro_component.js')) {
+        const code = `import rendererInstances from '${ASTRO_RENDERERS}';
+${src}`;
+        return {
+          code,
+          map: undefined, // TODO
+        };
+      }
+    },
+    transformIndexHtml(html) {
+      console.log({ html });
+      return html;
     },
   };
 }

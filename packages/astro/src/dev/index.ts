@@ -40,6 +40,9 @@ export default async function dev(config: AstroConfig, options: DevOptions): Pro
       }),
     ],
     publicDir: fileURLToPath(config.public),
+    resolve: {
+      dedupe: ['react', 'react-dom'],
+    },
     root: fileURLToPath(config.projectRoot),
     server: {
       force: true,
@@ -101,7 +104,7 @@ export default async function dev(config: AstroConfig, options: DevOptions): Pro
 
       // static pages
       if (urlMap.staticPages.has(reqURL)) {
-        const html = await ssr({ logging: options.logging, reqURL, origin, urlMap, viteServer });
+        const { html } = await ssr({ logging: options.logging, reqURL, origin, urlMap, projectRoot: config.projectRoot, viteServer });
         res.writeHead(200, {
           'Content-Type': mime.getType('.html') as string,
         });
@@ -114,7 +117,7 @@ export default async function dev(config: AstroConfig, options: DevOptions): Pro
       else {
         for (const [k] of urlMap.collections.entries()) {
           if (reqURL.startsWith(k)) {
-            const html = await ssr({ logging: options.logging, reqURL, origin, urlMap, viteServer });
+            const html = await ssr({ logging: options.logging, reqURL, origin, projectRoot: config.projectRoot, urlMap, viteServer });
             res.writeHead(200, {
               'Content-Type': mime.getType('.html') as string,
             });
@@ -123,17 +126,6 @@ export default async function dev(config: AstroConfig, options: DevOptions): Pro
             break;
           }
         }
-      }
-
-      // /_astro
-      if (reqURL.startsWith('/_astro/')) {
-        return proxyToVite(reqURL.replace(/^\/_astro\//, '/'));
-      }
-
-      // /_astro_frontend
-      if (reqURL.startsWith('/_astro_frontend/')) {
-        const rootDir = new URL('../frontend/', import.meta.url);
-        return proxyToFS(reqURL.replace(/^\/_astro_frontend\//, ''), rootDir);
       }
 
       // assets, and everything else:
